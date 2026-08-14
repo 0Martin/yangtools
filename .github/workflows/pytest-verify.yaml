@@ -1,0 +1,120 @@
+---
+name: Gerrit Composed PyTest Verify - prebuild script
+
+on:
+  workflow_dispatch:
+    inputs:
+      # GERRIT_BRANCH/GERRIT_CHANGE_ID stay required, matching
+      # compose-maven-verify.yaml's own schema; defaults still let a
+      # casual manual run skip filling them in.
+      GERRIT_BRANCH:
+        description: "Branch that change is against"
+        required: true
+        default: "master"
+        type: string
+      GERRIT_CHANGE_ID:
+        description: "The ID for the change"
+        required: true
+        default: "manual"
+        type: string
+      # GERRIT_REFSPEC is optional in the reusable workflow's schema but
+      # drives the actual Gerrit checkout, so it stays required here too.
+      # Override it with a real refs/changes/YY/NNYY/Z value to test a
+      # specific pending patchset.
+      #
+      # GERRIT_PROJECT stays blank on purpose: this repo's vars.GERRIT_URL
+      # is already the full project URL
+      # (https://git.opendaylight.org/gerrit/yangtools), and
+      # checkout-gerrit-change-action builds its fetch URL as
+      # "$GERRIT_URL/$GERRIT_PROJECT" - a non-empty value here doubles the
+      # project name in the URL and 403s.
+      GERRIT_PROJECT:
+        description: "Project in Gerrit"
+        required: false
+        default: ""
+        type: string
+      GERRIT_REFSPEC:
+        description: "Gerrit refspec of change"
+        required: true
+        default: "master"
+        type: string
+      # The remaining fields are optional in compose-maven-verify.yaml's
+      # schema and unused in its body (no vote/prepare job here reads
+      # them) - defaulted purely so they never need typing.
+      GERRIT_CHANGE_NUMBER:
+        description: "The Gerrit number"
+        required: false
+        default: "0"
+        type: string
+      GERRIT_CHANGE_URL:
+        description: "URL to the change"
+        required: false
+        default: ""
+        type: string
+      GERRIT_EVENT_TYPE:
+        description: "Type of Gerrit event"
+        required: false
+        default: "manual"
+        type: string
+      GERRIT_PATCHSET_NUMBER:
+        description: "The patch number for the change"
+        required: false
+        default: "1"
+        type: string
+      GERRIT_PATCHSET_REVISION:
+        description: "The revision sha"
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  # yamllint disable-line rule:line-length
+  group: gerrit-verify-test-${{ github.workflow }}-${{ github.event.inputs.GERRIT_BRANCH }}-${{ github.event.inputs.GERRIT_CHANGE_ID || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pytest-verify:
+    # use compose-jjb-verify from the v0.4 series of releng-reusable-workflows
+    uses: lfit/releng-reusable-workflows/.github/workflows/compose-maven-verify.yaml@main
+    with:
+      GERRIT_BRANCH: ${{ inputs.GERRIT_BRANCH }}
+      GERRIT_CHANGE_ID: ${{ inputs.GERRIT_CHANGE_ID }}
+      GERRIT_CHANGE_NUMBER: ${{ inputs.GERRIT_CHANGE_NUMBER }}
+      GERRIT_CHANGE_URL: ${{ inputs.GERRIT_CHANGE_URL }}
+      GERRIT_EVENT_TYPE: ${{ inputs.GERRIT_EVENT_TYPE }}
+      GERRIT_PATCHSET_NUMBER: ${{ inputs.GERRIT_PATCHSET_NUMBER }}
+      GERRIT_PATCHSET_REVISION: ${{ inputs.GERRIT_PATCHSET_REVISION }}
+      GERRIT_PROJECT: ${{ inputs.GERRIT_PROJECT }}
+      GERRIT_REFSPEC: ${{ inputs.GERRIT_REFSPEC }}
+      JDK_VERSION: "21"
+      MVN_VERSION: "3.9.6"
+      MVN_PROFILES: "q,integration-tests"
+      MVN_PHASES: "clean verify"
+      # yamllint disable rule:line-length
+      MVN_OPTS: >-
+        -Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn
+        -Dmaven.repo.local=/tmp/r -Dorg.ops4j.pax.url.mvn.localRepository=/tmp/r
+        -DaltDeploymentRepository=staging::default::file:"${GITHUB_WORKSPACE}"/m2repo
+      # yamllint enable rule:line-length
+      ENV_VARS: ${{ toJSON(vars) }}
+      PRE_BUILD_SCRIPT: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        # The reusable workflow's setup-python step pins Python 3.8, but
+        # pytest >=8.4 requires Python >=3.9. Install a newer interpreter
+        # and put it ahead on PATH so Maven's exec-maven-plugin (which just
+        # runs the bare `tox` executable, see pom.xml) picks it up later.
+        if ! command -v python3.12 >/dev/null; then
+          sudo apt-get update -y
+          sudo apt-get install -y python3.12 python3.12-venv
+        fi
+
+        python3.12 -m venv "$HOME/.pytest-venv"
+        "$HOME/.pytest-venv/bin/python" -m pip install --upgrade pip tox
+
+        echo "$HOME/.pytest-venv/bin" >> "$GITHUB_PATH"
+        "$HOME/.pytest-venv/bin/tox" --version
