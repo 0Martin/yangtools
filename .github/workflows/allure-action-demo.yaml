@@ -1,0 +1,101 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Trial of allure-framework/allure-action, to see what it shows for the PyTest
+# suite. It runs the same build as pytest-verify.yaml, but in a job of its
+# own: the action has to run in the job that generated the report, and
+# compose-maven-verify does not let callers add steps to its job.
+name: Allure Action Demo
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # Needed by allure-action for its checks.
+  checks: write
+
+jobs:
+  pytest-allure:
+    runs-on: ubuntu-latest
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # yamllint disable-line rule:line-length
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install tox and Allure
+        run: |
+          /usr/bin/python3 -m venv "$HOME/.pytest-venv"
+          "$HOME/.pytest-venv/bin/python" -m pip install --upgrade pip tox==4.65.5
+          echo "$HOME/.pytest-venv/bin" >> "$GITHUB_PATH"
+
+          npm install --global --prefix "$HOME/.allure" allure@3.20.1
+          echo "$HOME/.allure/bin" >> "$GITHUB_PATH"
+
+      - name: Run Maven
+        id: maven
+        # Keep going so the report steps below still run when tests fail;
+        # the last step fails the job afterwards.
+        continue-on-error: true
+        run: |
+          mvn -B clean verify -Pq,integration-tests \
+            -Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn \
+            -Dmaven.repo.local=/tmp/r -Dorg.ops4j.pax.url.mvn.localRepository=/tmp/r
+
+      - name: Add a quality gate to the report
+        # Without a pull request the action only creates GitHub checks, and
+        # only from quality gate results, so regenerate the report with one.
+        # Kept out of tests/allurerc.mjs so the demo does not change it.
+        if: ${{ always() }}
+        working-directory: tests
+        run: |
+          cat > allurerc.demo.mjs << 'EOF'
+          import base from "./allurerc.mjs";
+          export default { ...base, qualityGate: { rules: [{ maxFailures: 0 }] } };
+          EOF
+          # Exits non-zero when the gate fails, which is expected here.
+          allure generate --config ./allurerc.demo.mjs allure-results || true
+
+      - name: Allure action
+        if: ${{ always() }}
+        # yamllint disable-line rule:line-length
+        uses: allure-framework/allure-action@1a856297ee7a92306bc462c26783245a98d4dcfb # v0.11.0
+        with:
+          report-directory: tests/allure-report
+          debug: "true"
+
+      - name: Upload report
+        if: ${{ always() }}
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: allure-report
+          path: tests/allure-report/
+          if-no-files-found: warn
+
+      # The single-file report uploaded as-is, without the zip, to see
+      # whether GitHub opens it in the browser. With archive: false the
+      # file name becomes the artifact name, hence the copy.
+      - name: Prepare unzipped report
+        if: ${{ always() }}
+        run: cp tests/allure-report/index.html allure-report.html
+
+      - name: Upload unzipped report
+        if: ${{ always() }}
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: allure-report.html
+          archive: false
+          if-no-files-found: warn
+
+      - name: Fail if Maven failed
+        if: ${{ steps.maven.outcome == 'failure' }}
+        run: exit 1

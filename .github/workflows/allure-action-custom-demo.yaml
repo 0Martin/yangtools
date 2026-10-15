@@ -1,0 +1,49 @@
+name: Tests with Allure Report
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Checkout code
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # 2. Setup Java for the Maven build (Node.js is preinstalled on the runner)
+      - name: Setup Java
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # 3. Install tox, which Maven runs for the PyTest suite
+      - name: Install tox
+        run: |
+          /usr/bin/python3 -m venv "$HOME/.pytest-venv"
+          "$HOME/.pytest-venv/bin/python" -m pip install --upgrade pip tox==4.65.5
+          echo "$HOME/.pytest-venv/bin" >> "$GITHUB_PATH"
+
+      # 4. Run tests and generate the report; allure run picks up
+      #    tests/allure-results and writes ./allure-report with summary.json
+      - name: Run tests and generate report
+        run: |
+          npx --yes allure@3.20.1 run -- \
+            mvn -B clean verify -Pq,integration-tests \
+              -Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn \
+              -Dmaven.repo.local=/tmp/r -Dorg.ops4j.pax.url.mvn.localRepository=/tmp/r
+
+      # 5. Run the Allure action; with no pull request it posts no comment
+      - name: Run Allure Action
+        if: ${{ always() }}
+        uses: allure-framework/allure-action@1a856297ee7a92306bc462c26783245a98d4dcfb # v0.11.0
+        with:
+          report-directory: "./allure-report"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          debug: "true"
